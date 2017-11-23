@@ -352,16 +352,6 @@ public class BTreeFile extends IndexFile implements GlobalConst
 	LeafDeleteException, InsertException, IOException
 	{
 		KeyEntry newRootEntry;
-		
-		if (key.getKeyLength() > headerPage.get_maxKeySize())
-			throw new KeyTooLongException(null, "");
-
-		if (key.getKeyType() == Key.INTEGER_KEY) {
-			if (headerPage.get_keyType() != Key.INTEGER_KEY) {
-				throw new KeyNotMatchException(null, "");
-			}
-		} else
-			throw new KeyNotMatchException(null, "");
 
 		//if no root exists, we create a new root page, which will be a leaf page
 		if (headerPage.get_rootId().pid == INVALID_PAGE) {
@@ -500,18 +490,16 @@ public class BTreeFile extends IndexFile implements GlobalConst
 				// the new data entry needs to be inserted on the new index page
 				newIndexPage.insertKey(upEntry.key, ((PageId) upEntry.getData()));
 			} 
-//			else {
-//				currentIndexPage.insertKey(upEntry.key,((PageId) upEntry.getData()));
-//
-//				int i = (int) currentIndexPage.getSlotCnt() - 1;
-//				tmpEntry = BT.getEntryFromBytes(currentIndexPage.getpage(), currentIndexPage.getSlotOffset(i),
-//						currentIndexPage.getSlotLength(i), headerPage.get_keyType(),  BTSortedPage.INDEX);
-//
-//				newIndexPage.insertKey(tmpEntry.key, ((PageId) tmpEntry.getData()));
-//
-//				currentIndexPage.deleteSortedRecord(new RID(currentIndexPage.getCurPage(), i));
-//
-//			}
+			else {
+				currentIndexPage.insertKey(upEntry.key,((PageId) upEntry.getData()));
+
+				int i = (int) currentIndexPage.getSlotCnt() - 1;
+				tmpEntry =  new KeyEntry(currentIndexPage.getpage(), currentIndexPage.getSlotOffset(i),
+						currentIndexPage.getSlotLength(i), headerPage.get_keyType(),  BTSortedPage.INDEX);
+				newIndexPage.insertKey(tmpEntry.key, ((PageId) tmpEntry.getData()));
+				currentIndexPage.deleteSortedRecord(new RID(currentIndexPage.getCurPage(), i));
+
+			}
 
 			unpinPage(currentIndexPageId, true);
 
@@ -669,23 +657,67 @@ public class BTreeFile extends IndexFile implements GlobalConst
 	 *                error from the lower layer
 	 * 
 	 */
-	public boolean delete(Key key, RID rid) throws DeleteFashionException,
-			LeafRedistributeException, RedistributeException,
-			InsertRecException, KeyNotMatchException, UnpinPageException,
-			IndexInsertRecException, FreePageException,
-			RecordNotFoundException, PinPageException,
-			IndexFullDeleteException, LeafDeleteException, IteratorException,
-			ConstructPageException, DeleteRecException, IndexSearchException,
-			IOException
-	{
-		if (headerPage.get_deleteFashion() == FULL_DELETE) 
-	        return FullDelete(key, rid); 
-	      else if (headerPage.get_deleteFashion() == NAIVE_DELETE)
-	        return NaiveDelete(key, rid);
-	      else
-		throw new DeleteFashionException(null,"");
+	public boolean delete(Key key, RID rid)
+			throws DeleteFashionException, LeafRedistributeException, RedistributeException, InsertRecException,
+			KeyNotMatchException, UnpinPageException, IndexInsertRecException, FreePageException,
+			RecordNotFoundException, PinPageException, IndexFullDeleteException, LeafDeleteException, IteratorException,
+			ConstructPageException, DeleteRecException, IndexSearchException, IOException {
+		BTLeafPage leafPage;
+		RID curRid = new RID(); // iterator
+		Key curkey;
+		RID dummyRid;
+		PageId nextpage;
+		boolean deleted;
+		KeyEntry entry;
+
+		leafPage = findRunStart(key, curRid); // find first page,rid of key
+		if (leafPage == null)
+			return false;
+
+		entry = leafPage.getCurrent(curRid);
+
+		while (true) {
+
+			while (entry == null) { // have to go right
+				nextpage = leafPage.getNextPage();
+				unpinPage(leafPage.getCurPage(), false);
+				if (nextpage.pid == INVALID_PAGE) {
+					return false;
+				}
+
+				leafPage = new BTLeafPage(pinPage(nextpage), headerPage.get_keyType());
+				entry = leafPage.getFirst(new RID());
+			}
+
+			if (key.compareTo(entry.key) > 0)
+				break;
+
+			if (leafPage.delEntry(new KeyEntry(key, rid)) == true) {
+
+				// successfully found <key, rid> on this page and deleted it.
+				// unpin dirty page and return OK.
+				unpinPage(leafPage.getCurPage(), true);
+
+				return true;
+			}
+
+			nextpage = leafPage.getNextPage();
+			unpinPage(leafPage.getCurPage(), false);
+
+			leafPage = new BTLeafPage(pinPage(nextpage), headerPage.get_keyType());
+
+			entry = leafPage.getFirst(curRid);
+		}
+
+		/*
+		 * We reached a page with first key > `key', so return an error. We should have
+		 * got true back from delUserRid above.
+		 */
+
+		unpinPage(leafPage.getCurPage(), false);
+		return false;
 	}
-	
+
 	BTLeafPage findRunStart(Key lo_key, RID startrid) throws IOException, IteratorException, KeyNotMatchException,
 			ConstructPageException, PinPageException, UnpinPageException {
 		BTLeafPage pageLeaf;
@@ -745,15 +777,9 @@ public class BTreeFile extends IndexFile implements GlobalConst
 			curEntry = pageLeaf.getFirst(startrid);
 		}
 
-		// ASSERTIONS:
-		// - curkey, curRid: contain the first record on the
-		// current leaf page (curkey its key, cur
-		// - pageLeaf, pageno valid and pinned
 
 		if (lo_key == null) {
 			return pageLeaf;
-			// note that pageno/pageLeaf is still pinned;
-			// scan will unpin it when done
 		}
 
 		while (curEntry.key.compareTo(lo_key) < 0) {
@@ -775,411 +801,7 @@ public class BTreeFile extends IndexFile implements GlobalConst
 
 		return pageLeaf;
 	}
-	
-	  private boolean NaiveDelete ( Key key, RID rid)
-			    throws LeafDeleteException,  
-				   KeyNotMatchException,  
-				   PinPageException,
-				   ConstructPageException, 
-				   IOException,
-				   UnpinPageException,  
-				   PinPageException, 
-				   IndexSearchException,  
-				   IteratorException
-			    {
-			      BTLeafPage leafPage;
-			      RID curRid=new RID();  // iterator
-			      Key curkey;
-			      RID dummyRid; 
-			      PageId nextpage;
-			      boolean deleted;
-			      KeyEntry entry;
-			      
-			      
-			      
-			      leafPage = findRunStart(key, curRid);  // find first page,rid of key
-			      if( leafPage == null) return false;
-			      
-			      entry=leafPage.getCurrent(curRid);
-			      
-			      while ( true ) {
-				
-			        while ( entry == null) { // have to go right
-				  nextpage = leafPage.getNextPage();
-				  unpinPage(leafPage.getCurPage(), false);
-				  if (nextpage.pid == INVALID_PAGE) {
-				    return false;
-				  }
-				  
-				  leafPage=new BTLeafPage(pinPage(nextpage), 
-							  headerPage.get_keyType() );
-				  entry=leafPage.getFirst(new RID());
-				}
-				
-				if (key.compareTo(entry.key) > 0 )
-				  break;
-				
-				if( leafPage.delEntry(new KeyEntry(key, rid)) ==true) {
-				  
-			          // successfully found <key, rid> on this page and deleted it.
-			          // unpin dirty page and return OK.
-			          unpinPage(leafPage.getCurPage(), true);
-				  
-				  
-			 
-				  
-			          return true;
-				}
-				
-				nextpage = leafPage.getNextPage();
-				unpinPage(leafPage.getCurPage(), false);
-				
-				leafPage=new BTLeafPage(pinPage(nextpage), headerPage.get_keyType());
-				
-				entry=leafPage.getFirst(curRid);
-			      }
-			      
-			      /*
-			       * We reached a page with first key > `key', so return an error.
-			       * We should have got true back from delUserRid above.  Apparently
-			       * the specified <key,rid> data entry does not exist.
-			       */
-			      
-			      unpinPage(leafPage.getCurPage(), false);
-			      return false;
-			    }
- 
-	  
-			  /*
-			   * Status BTreeFile::FullDelete (const void *key, const RID rid) 
-			   * 
-			   * Remove specified data entry (<key, rid>) from an index.
-			   *
-			   * Most work done recursively by _Delete
-			   *
-			   * Special case: delete root if the tree is empty
-			   *
-			   * Page containing first occurrence of key `key' is found for us
-			   * After the page containing first occurence of key 'key' is found,
-			   * we iterate for (just a few) pages, if necesary,
-			   * to find the one containing <key,rid>, which we then delete via
-			   * BTLeafPage::delUserRid.
-			   *@return false if no such record; true if succees 
-			   */
-			  
-			  private boolean FullDelete (Key key,  RID rid)
-			    throws IndexInsertRecException,
-				   RedistributeException,
-				   IndexSearchException, 
-				   RecordNotFoundException, 
-				   DeleteRecException,
-				   InsertRecException, 
-				   LeafRedistributeException, 
-				   IndexFullDeleteException,
-				   FreePageException, 
-				   LeafDeleteException, 
-				   KeyNotMatchException, 
-				   ConstructPageException, 
-				   IOException, 
-				   IteratorException,
-				   PinPageException, 
-				   UnpinPageException, 
-				   IteratorException
-			    {
-			      
-			      try {
-				
-			
-				
-				_Delete(key, rid, headerPage.get_rootId(), null);
-				
-				
-			
-				return true;
-			      }
-			      catch (RecordNotFoundException e) {
-				return false;
-			      }
-			      
-			    }
-
-
-				private Key _Delete(Key key, RID rid, PageId currentPageId, PageId parentPageId)
-						throws IndexInsertRecException, RedistributeException, IndexSearchException, RecordNotFoundException,
-						DeleteRecException, InsertRecException, LeafRedistributeException, IndexFullDeleteException,
-						FreePageException, LeafDeleteException, KeyNotMatchException, ConstructPageException, UnpinPageException,
-						IteratorException, PinPageException, IOException {
-
-					BTSortedPage sortPage;
-					Page page;
-					page = pinPage(currentPageId);
-					sortPage = new BTSortedPage(page, headerPage.get_keyType());
-
-					if (sortPage.getType() ==  BTSortedPage.LEAF) {
-						RID curRid = new RID(); // iterator
-						KeyEntry tmpEntry;
-						Key curkey;
-						RID dummyRid;
-						PageId nextpage;
-						BTLeafPage leafPage;
-						leafPage = new BTLeafPage(page, headerPage.get_keyType());
-
-						Key deletedKey = key;
-						tmpEntry = leafPage.getFirst(curRid);
-
-						RID delRid;
-						// for all records with key equal to 'key', delete it if its rid = 'rid'
-						while ((tmpEntry != null) && (key.compareTo(tmpEntry.key) >= 0)) {
-							// WriteUpdateLog is done in the btleafpage level - to log the
-							// deletion of the rid.
-
-							if (leafPage.delEntry(new KeyEntry(key, rid))) {
-								// successfully found <key, rid> on this page and deleted it.
-
-								PageId leafPage_no = leafPage.getCurPage();
-								if ((4 + leafPage.available_space()) <= ((PAGE_SIZE - HFPage.DPFIXED) / 2)) {
-									// the leaf page is at least half full after the deletion
-									unpinPage(leafPage.getCurPage(), true /* = DIRTY */);
-									return null;
-								} else if (leafPage_no.pid == headerPage.get_rootId().pid) {
-									// the tree has only one node - the root
-									if (leafPage.numberOfRecords() != 0) {
-										unpinPage(leafPage_no, true /* = DIRTY */);
-										return null;
-									} else {
-										// the whole tree is empty
-
-										freePage(leafPage_no);
-
-										updateHeader(new PageId(INVALID_PAGE));
-										return null;
-									}
-								} else {
-									// get a sibling
-									BTIndexPage parentPage;
-									parentPage = new BTIndexPage(pinPage(parentPageId), headerPage.get_keyType());
-
-									PageId siblingPageId = new PageId();
-									BTLeafPage siblingPage;
-									int direction;
-									direction = parentPage.getSibling(key, siblingPageId);
-
-									if (direction == 0) {
-										// there is no sibling. nothing can be done.
-
-										unpinPage(leafPage.getCurPage(), true);
-
-										unpinPage(parentPageId, false);
-
-										return null;
-									}
-
-									siblingPage = new BTLeafPage(pinPage(siblingPageId), headerPage.get_keyType());
-
-									if ((siblingPage.available_space()
-											+ 8 /* 2*sizeof(slot) */ ) >= ((PAGE_SIZE - HFPage.DPFIXED)
-													- leafPage.available_space())) {
-
-										// we can merge these two children
-										// get old child entry in the parent first
-										KeyEntry oldChildEntry;
-										if (direction == -1)
-											oldChildEntry = leafPage.getFirst(curRid);
-										// get a copy
-										else {
-											oldChildEntry = siblingPage.getFirst(curRid);
-										}
-
-										// merge the two children
-										BTLeafPage leftChild, rightChild;
-										if (direction == -1) {
-											leftChild = siblingPage;
-											rightChild = leafPage;
-										} else {
-											leftChild = leafPage;
-											rightChild = siblingPage;
-										}
-
-										// move all entries from rightChild to leftChild
-										RID firstRid = new RID(), insertRid;
-										for (tmpEntry = rightChild.getFirst(firstRid); tmpEntry != null; tmpEntry = rightChild
-												.getFirst(firstRid)) {
-											leftChild.insertRecord(tmpEntry);
-											rightChild.deleteSortedRecord(firstRid);
-										}
-
-										// adjust chain
-										leftChild.setNextPage(rightChild.getNextPage());
-										if (rightChild.getNextPage().pid != INVALID_PAGE) {
-											BTLeafPage nextLeafPage = new BTLeafPage(rightChild.getNextPage(),
-													headerPage.get_keyType());
-											nextLeafPage.setPrevPage(leftChild.getCurPage());
-											unpinPage(nextLeafPage.getCurPage(), true);
-										}
-
-										unpinPage(leftChild.getCurPage(), true);
-
-										unpinPage(parentPageId, true);
-
-										freePage(rightChild.getCurPage());
-
-										return oldChildEntry.key;
-									} 
-								} // get a sibling block
-							} // delete success block
-
-							nextpage = leafPage.getNextPage();
-							unpinPage(leafPage.getCurPage(), false);
-
-							if (nextpage.pid == INVALID_PAGE)
-								throw new RecordNotFoundException(null, "");
-
-							leafPage = new BTLeafPage(pinPage(nextpage), headerPage.get_keyType());
-							tmpEntry = leafPage.getFirst(curRid);
-
-						} // while loop
-
-						/*
-						 * We reached a page with first key > `key', so return an error. We should have
-						 * got true back from delUserRid above. Apparently the specified <key,rid> data
-						 * entry does not exist.
-						 */
-
-						unpinPage(leafPage.getCurPage(), false);
-						throw new RecordNotFoundException(null, "");
-					}
-
-					if (sortPage.getType() ==  BTSortedPage.INDEX) {
-						PageId childPageId;
-						BTIndexPage indexPage = new BTIndexPage(page, headerPage.get_keyType());
-						childPageId = indexPage.getPageNoByKey(key);
-
-						// now unpin the page, recurse and then pin it again
-						unpinPage(currentPageId, false);
-
-						Key oldChildKey = _Delete(key, rid, childPageId, currentPageId);
-
-						// two cases:
-						// - oldChildKey == null: one level lower no merge has occurred:
-						// - oldChildKey != null: one of the children has been deleted and
-						// oldChildEntry is the entry to be deleted.
-
-						indexPage = new BTIndexPage(pinPage(currentPageId), headerPage.get_keyType());
-
-						if (oldChildKey == null) {
-							unpinPage(indexPage.getCurPage(), true);
-							return null;
-						}
-
-						// delete the oldChildKey
-
-						// save possible old child entry before deletion
-						PageId dummyPageId;
-						Key deletedKey = key;
-						RID curRid = indexPage.deleteKey(oldChildKey);
-
-						if (indexPage.getCurPage().pid == headerPage.get_rootId().pid) {
-							// the index page is the root
-							if (indexPage.numberOfRecords() == 0) {
-								BTSortedPage childPage;
-								childPage = new BTSortedPage(indexPage.getPrevPage(), headerPage.get_keyType());
-
-								updateHeader(indexPage.getPrevPage());
-								unpinPage(childPage.getCurPage(), false);
-
-								freePage(indexPage.getCurPage());
-								return null;
-							}
-							unpinPage(indexPage.getCurPage(), true);
-							return null;
-						}
-
-						// now we know the current index page is not a root
-						if ((4 /* sizeof slot */ + indexPage.available_space()) <= ((PAGE_SIZE - HFPage.DPFIXED) / 2)) {
-							// the index page is at least half full after the deletion
-							unpinPage(currentPageId, true);
-
-							return null;
-						} else {
-							// get a sibling
-							BTIndexPage parentPage;
-							parentPage = new BTIndexPage(pinPage(parentPageId), headerPage.get_keyType());
-
-							PageId siblingPageId = new PageId();
-							BTIndexPage siblingPage;
-							int direction;
-							direction = parentPage.getSibling(key, siblingPageId);
-							if (direction == 0) {
-								// there is no sibling. nothing can be done.
-
-								unpinPage(indexPage.getCurPage(), true);
-
-								unpinPage(parentPageId, false);
-
-								return null;
-							}
-
-							siblingPage = new BTIndexPage(pinPage(siblingPageId), headerPage.get_keyType());
-
-							int pushKeySize = 0;
-							if (direction == 1) {
-								pushKeySize = (parentPage.findKey(siblingPage.getFirst(new RID()).key)).getKeyLength();
-							} else if (direction == -1) {
-								pushKeySize = (parentPage.findKey(indexPage.getFirst(new RID()).key)).getKeyLength();
-							}
-
-							if (siblingPage.available_space() + 4 /* slot size */ >= ((PAGE_SIZE - HFPage.DPFIXED)
-									- (indexPage.available_space() + 4 /* slot size */) + pushKeySize + 4 /* slot size */
-									+ 4 /* pageId size */)) {
-
-								// we can merge these two children
-
-								// get old child entry in the parent first
-								Key oldChildEntry;
-								if (direction == -1) {
-									oldChildEntry = indexPage.getFirst(curRid).key;
-								} else {
-									oldChildEntry = siblingPage.getFirst(curRid).key;
-								}
-
-								// merge the two children
-								BTIndexPage leftChild, rightChild;
-								if (direction == -1) {
-									leftChild = siblingPage;
-									rightChild = indexPage;
-								} else {
-									leftChild = indexPage;
-									rightChild = siblingPage;
-								}
-
-								// pull down the entry in its parent node
-								// and put it at the end of the left child
-								RID firstRid = new RID(), insertRid;
-								PageId curPageId;
-
-								leftChild.insertKey(parentPage.findKey(oldChildEntry), rightChild.getLeftLink());
-
-								// move all entries from rightChild to leftChild
-								for (KeyEntry tmpEntry = rightChild.getFirst(firstRid); tmpEntry != null; tmpEntry = rightChild
-										.getFirst(firstRid)) {
-									leftChild.insertKey(tmpEntry.key, ((PageId) tmpEntry.getData()));
-									rightChild.deleteSortedRecord(firstRid);
-								}
-
-								unpinPage(leftChild.getCurPage(), true);
-
-								unpinPage(parentPageId, true);
-
-								freePage(rightChild.getCurPage());
-
-								return oldChildEntry; // ???
-
-							} 
-						}
-					} // index node
-					return null; // neither leaf and index page
-				}	  
-
+		  
 	/**
 	 * create a scan with given keys Cases: (1) lo_key = null, hi_key = null
 	 * scan the whole index (2) lo_key = null, hi_key!= null range scan from min

@@ -85,7 +85,7 @@ public class BTFileScan extends IndexFileScan implements GlobalConst
 
 	      if (endkey != null)  
 	        if ( entry.key.compareTo(endkey)  > 0) {
-	            // went past right end of scan 
+	        // went past right end of scan 
 		    Minibase.JavabaseBM.unpinPage(leafPage.getCurPage(), false);
 	            leafPage=null;
 		    return null;

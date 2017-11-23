@@ -5,9 +5,16 @@ import exceptions.ConstructPageException;
 import exceptions.GetFileEntryException;
 import exceptions.HashEntryNotFoundException;
 import exceptions.InvalidFrameNumberException;
+import exceptions.IteratorException;
+import exceptions.KeyNotMatchException;
 import exceptions.PageUnpinnedException;
+import exceptions.PinPageException;
 import exceptions.ReplacerException;
+import exceptions.ScanIteratorException;
+import exceptions.UnpinPageException;
+import exceptions.ScanDeleteException;
 import global.AttrType;
+import global.Convert;
 import global.GlobalConst;
 import global.Minibase;
 import global.PageId;
@@ -123,11 +130,33 @@ public class BTTest extends TestDriver implements GlobalConst
 			e.printStackTrace();
 			return(false);
 		}
+//		
+		try {
+			scan = newIndex.new_scan(null, null);
+			Boolean status = deleteTreeValue(6);
+			if (status) {
+				System.out.println("Value deleted successfully. New tree is:");
+				newIndex.printBTree();
+			} else {
+				System.out.println("Value not found.");
+			}
+		} 
+		catch (Exception e) {
+			e.printStackTrace();
+		}
+		 
+		try {
+			scan.destroyBTreeFileScan();
+		} 
+		catch (InvalidFrameNumberException | ReplacerException |
+				exceptions.PageUnpinnedException | HashEntryNotFoundException | IOException e) {
+			e.printStackTrace();
+		}
 		
 		//
 		// all done, remove the index
 		//
-		
+				
 		try
 		{
 			newIndex.close();
@@ -140,6 +169,30 @@ public class BTTest extends TestDriver implements GlobalConst
 		
 		return(true);
 	}
+	
+	// To test BTFileScan
+	public Boolean deleteTreeValue(int val) {
+		int curVal = -1;
+		
+		while (curVal <= val) {
+			try {
+				curVal = Convert.getIntValue(0, scan.get_next().getBytes());
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+
+			if (val == curVal) {
+				try {
+					scan.delete_current();
+				} catch (ScanDeleteException e) {
+					e.printStackTrace();
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+	
 	
 	// 
 	// convenience function for creating files to run through test1()
